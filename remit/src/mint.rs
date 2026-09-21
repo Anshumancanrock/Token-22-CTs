@@ -1,4 +1,4 @@
-//! **Task 1: creating the mint.**
+//! **Tasks 1 and 5: creating the mint.**
 //!
 //! ## Sizing
 //! `InitializeMint` rejects the account (`InvalidAccountData`) unless its length is exactly
@@ -15,6 +15,14 @@
 //! `InitializeMint` go in one transaction. Split across transactions, anyone could initialize the
 //! funded, empty account with their own fee authority or freeze authority first. The metadata
 //! instructions come after `InitializeMint` because they need the mint authority's signature.
+//!
+//! ## Re-issue (task 5)
+//! Confidential transfers cannot be added to an existing mint, so the v2 mint is a new mint that
+//! carries the v1 extension list forward and appends `PermanentDelegate`,
+//! `ConfidentialTransferMint` (manual approval) and `ConfidentialTransferFeeConfig`. The last one
+//! is not optional: Token-2022 rejects `TransferFeeConfig` + `ConfidentialTransferMint` without it
+//! (`InvalidExtensionCombination`), because a fee on an encrypted amount must itself be encrypted,
+//! under a key the issuer controls.
 
 use {
     crate::{Cluster, Result, TOKEN_2022_PROGRAM_ID},
@@ -24,12 +32,18 @@ use {
     solana_program_error::ProgramError,
     solana_signer::Signer,
     solana_system_interface::instruction::create_account,
+    solana_zk_sdk::encryption::elgamal::ElGamalKeypair,
+    solana_zk_sdk_pod::encryption::elgamal::PodElGamalPubkey,
     spl_token_2022_interface::{
         extension::{
+            confidential_transfer, confidential_transfer_fee,
             default_account_state::instruction::initialize_default_account_state, metadata_pointer,
             transfer_fee::instruction::initialize_transfer_fee_config, ExtensionType,
         },
-        instruction::{close_account, initialize_mint2, initialize_mint_close_authority},
+        instruction::{
+            close_account, initialize_mint2, initialize_mint_close_authority,
+            initialize_permanent_delegate,
+        },
         state::{AccountState, Mint},
     },
     spl_token_metadata_interface::{
@@ -44,6 +58,13 @@ pub const V1_EXTENSIONS: [ExtensionType; 4] = [
     ExtensionType::MetadataPointer,
     ExtensionType::DefaultAccountState,
     ExtensionType::MintCloseAuthority,
+];
+
+/// Extensions the v2 re-issue (task 5) appends to [`V1_EXTENSIONS`].
+pub const V2_ADDED_EXTENSIONS: [ExtensionType; 3] = [
+    ExtensionType::PermanentDelegate,
+    ExtensionType::ConfidentialTransferMint,
+    ExtensionType::ConfidentialTransferFeeConfig,
 ];
 
 /// Every authority on the mint. Each power has its own key, so each can be held, rotated or
@@ -73,6 +94,30 @@ impl Authorities {
             fee_withdraw: Keypair::new(),
             close: Keypair::new(),
             metadata: Keypair::new(),
+        }
+    }
+}
+
+/// Authorities added by the v2 re-issue (task 5).
+pub struct ComplianceAuthorities {
+    /// `PermanentDelegate`, the seizure authority: can transfer or burn from any account.
+    pub seizure: Keypair,
+    /// `ConfidentialTransferMint` authority: approves accounts for confidential use (manual policy).
+    pub confidential: Keypair,
+    /// Auditor: can decrypt the amount of every confidential transfer.
+    pub auditor: ElGamalKeypair,
+    /// Decrypts, and can withdraw, fees withheld on confidential transfers.
+    pub fee_withdraw_elgamal: ElGamalKeypair,
+}
+
+impl ComplianceAuthorities {
+    /// Fresh random keys for every role.
+    pub fn generate() -> Self {
+        Self {
+            seizure: Keypair::new(),
+            confidential: Keypair::new(),
+            auditor: ElGamalKeypair::new_rand(),
+            fee_withdraw_elgamal: ElGamalKeypair::new_rand(),
         }
     }
 }
@@ -196,6 +241,41 @@ pub fn v1_extension_inits(
     ])
 }
 
+/// Extension inits the v2 mint (task 5) appends to the v1 set.
+pub fn v2_added_extension_inits(
+    mint: &Address,
+    authorities: &Authorities,
+    compliance: &ComplianceAuthorities,
+) -> Result<Vec<ExtensionInit>> {
+    let auditor = PodElGamalPubkey::from(compliance.auditor.pubkey_owned());
+    let fee_withdraw = PodElGamalPubkey::from(compliance.fee_withdraw_elgamal.pubkey_owned());
+    Ok(vec![
+        (
+            ExtensionType::PermanentDelegate,
+            initialize_permanent_delegate(&TOKEN_2022_PROGRAM_ID, mint, &compliance.seizure.pubkey())?,
+        ),
+        (
+            ExtensionType::ConfidentialTransferMint,
+            confidential_transfer::instruction::initialize_mint(
+                &TOKEN_2022_PROGRAM_ID,
+                mint,
+                Some(compliance.confidential.pubkey()),
+                false, // auto_approve_new_accounts = false: approve_policy = manual
+                Some(auditor),
+            )?,
+        ),
+        (
+            ExtensionType::ConfidentialTransferFeeConfig,
+            confidential_transfer_fee::instruction::initialize_confidential_transfer_fee_config(
+                &TOKEN_2022_PROGRAM_ID,
+                mint,
+                Some(authorities.fee_withdraw.pubkey()),
+                &fee_withdraw,
+            )?,
+        ),
+    ])
+}
+
 /// Build a [`MintPlan`] from a list of extension inits.
 pub fn plan_from_inits(
     cluster: &impl Cluster,
@@ -272,6 +352,19 @@ pub fn plan_v1(
     plan_from_inits(cluster, mint, authorities, params, inits)
 }
 
+/// Plan the v2 re-issue (task 5): the v1 extension list carried forward, plus the new ones.
+pub fn plan_v2(
+    cluster: &impl Cluster,
+    mint: &Address,
+    authorities: &Authorities,
+    compliance: &ComplianceAuthorities,
+    params: &StablecoinParams,
+) -> Result<MintPlan> {
+    let mut inits = v1_extension_inits(mint, authorities, params)?;
+    inits.extend(v2_added_extension_inits(mint, authorities, compliance)?);
+    plan_from_inits(cluster, mint, authorities, params, inits)
+}
+
 /// Execute a plan: the atomic initialization transaction, then the metadata transaction.
 pub fn create_mint(
     cluster: &mut impl Cluster,
@@ -292,6 +385,19 @@ pub fn create_v1(
     params: &StablecoinParams,
 ) -> Result<MintPlan> {
     let plan = plan_v1(cluster, &mint.pubkey(), authorities, params)?;
+    create_mint(cluster, &plan, mint, authorities)?;
+    Ok(plan)
+}
+
+/// Plan and create the v2 mint (task 5).
+pub fn create_v2(
+    cluster: &mut impl Cluster,
+    mint: &Keypair,
+    authorities: &Authorities,
+    compliance: &ComplianceAuthorities,
+    params: &StablecoinParams,
+) -> Result<MintPlan> {
+    let plan = plan_v2(cluster, &mint.pubkey(), authorities, compliance, params)?;
     create_mint(cluster, &plan, mint, authorities)?;
     Ok(plan)
 }
