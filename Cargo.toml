@@ -38,3 +38,14 @@ spl-token-2022-interface = "3.1.1"
 spl-token-confidential-transfer-proof-generation = "0.6.1"
 spl-token-metadata-interface = "1.0.1"
 thiserror = "2"
+
+# Proof generation and the in-process ZK verifier are curve25519-heavy. Optimising
+# dependencies keeps the confidential-transfer tests fast while our own crates stay
+# in debug mode (full overflow checks, readable backtraces).
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
