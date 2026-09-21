@@ -2,6 +2,7 @@
 
 pub mod cluster;
 pub mod error;
+pub mod state;
 
 pub use {
     cluster::{Cluster, Receipt, PACKET_DATA_SIZE},
