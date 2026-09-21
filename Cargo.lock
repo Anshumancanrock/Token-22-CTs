@@ -1915,6 +1915,7 @@ dependencies = [
  "spl-token-2022-interface",
  "spl-token-confidential-transfer-proof-generation",
  "spl-token-metadata-interface",
+ "spl-type-length-value",
  "thiserror 2.0.20",
 ]
 

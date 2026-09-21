@@ -2,12 +2,9 @@
 //! written against this small trait instead of a concrete client.
 
 use {
-    crate::Result,
-    solana_address::Address,
-    solana_compute_budget_interface::ComputeBudgetInstruction,
-    solana_instruction::Instruction,
-    solana_keypair::Keypair,
-    solana_message::Message,
+    crate::Result, solana_address::Address,
+    solana_compute_budget_interface::ComputeBudgetInstruction, solana_instruction::Instruction,
+    solana_keypair::Keypair, solana_message::Message,
 };
 
 /// Largest serialized transaction the network accepts (1280-byte IPv6 MTU minus headers).

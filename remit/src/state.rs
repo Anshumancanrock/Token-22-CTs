@@ -109,7 +109,10 @@ impl MintSnapshot {
                 .get_extension::<PermanentDelegate>()
                 .ok()
                 .and_then(|extension| extension.delegate.get()),
-            confidential: mint.get_extension::<ConfidentialTransferMint>().ok().copied(),
+            confidential: mint
+                .get_extension::<ConfidentialTransferMint>()
+                .ok()
+                .copied(),
             confidential_fee: mint
                 .get_extension::<ConfidentialTransferFeeConfig>()
                 .ok()
@@ -122,9 +125,9 @@ impl MintSnapshot {
 
     /// The transfer fee config, or an error if the mint has none.
     pub fn require_transfer_fee(&self) -> Result<&TransferFeeConfig> {
-        self.transfer_fee
-            .as_ref()
-            .ok_or_else(|| Error::Invalid(format!("mint {} has no TransferFeeConfig", self.address)))
+        self.transfer_fee.as_ref().ok_or_else(|| {
+            Error::Invalid(format!("mint {} has no TransferFeeConfig", self.address))
+        })
     }
 }
 

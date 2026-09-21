@@ -1,12 +1,9 @@
 //! Error type shared by every flow.
 
 use {
-    num_traits::FromPrimitive,
-    solana_address::Address,
-    solana_instruction::error::InstructionError,
-    solana_program_error::ProgramError,
-    solana_transaction_error::TransactionError,
-    spl_token_2022_interface::error::TokenError,
+    num_traits::FromPrimitive, solana_address::Address,
+    solana_instruction::error::InstructionError, solana_program_error::ProgramError,
+    solana_transaction_error::TransactionError, spl_token_2022_interface::error::TokenError,
 };
 
 /// Result alias used across the crate.

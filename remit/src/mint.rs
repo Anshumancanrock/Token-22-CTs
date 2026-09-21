@@ -38,7 +38,7 @@ use {
         extension::{
             confidential_transfer, confidential_transfer_fee,
             default_account_state::instruction::initialize_default_account_state, metadata_pointer,
-            transfer_fee::instruction::initialize_transfer_fee_config, ExtensionType,
+            transfer_fee::instruction::initialize_transfer_fee_config, ExtensionType, Length,
         },
         instruction::{
             close_account, initialize_mint2, initialize_mint_close_authority,
@@ -50,6 +50,8 @@ use {
         instruction::{initialize as initialize_metadata, update_field},
         state::{Field, TokenMetadata},
     },
+    spl_type_length_value::variable_len_pack::VariableLenPack,
+    std::mem::size_of,
 };
 
 /// Extensions of the v1 mint (task 1), in initialization order.
@@ -161,7 +163,11 @@ impl Default for StablecoinParams {
 
 impl StablecoinParams {
     /// The `TokenMetadata` stored in the mint.
-    pub fn token_metadata(&self, mint: &Address, update_authority: &Address) -> Result<TokenMetadata> {
+    pub fn token_metadata(
+        &self,
+        mint: &Address,
+        update_authority: &Address,
+    ) -> Result<TokenMetadata> {
         Ok(TokenMetadata {
             update_authority: Some(*update_authority)
                 .try_into()
@@ -252,7 +258,11 @@ pub fn v2_added_extension_inits(
     Ok(vec![
         (
             ExtensionType::PermanentDelegate,
-            initialize_permanent_delegate(&TOKEN_2022_PROGRAM_ID, mint, &compliance.seizure.pubkey())?,
+            initialize_permanent_delegate(
+                &TOKEN_2022_PROGRAM_ID,
+                mint,
+                &compliance.seizure.pubkey(),
+            )?,
         ),
         (
             ExtensionType::ConfidentialTransferMint,
@@ -286,9 +296,8 @@ pub fn plan_from_inits(
 ) -> Result<MintPlan> {
     let extensions: Vec<ExtensionType> = inits.iter().map(|(extension, _)| *extension).collect();
     let space = ExtensionType::try_calculate_account_len::<Mint>(&extensions)?;
-    let metadata_len = params
-        .token_metadata(mint, &authorities.metadata.pubkey())?
-        .tlv_size_of()?;
+    let metadata_len =
+        metadata_tlv_len(&params.token_metadata(mint, &authorities.metadata.pubkey())?)?;
     let lamports = cluster.minimum_balance_for_rent_exemption(space + metadata_len);
 
     let mut initialize = Vec::with_capacity(inits.len() + 2);
@@ -339,6 +348,16 @@ pub fn plan_from_inits(
         initialize,
         metadata,
     })
+}
+
+/// Bytes a `TokenMetadata` entry adds to a mint: a 4-byte Token-2022 TLV header (2-byte
+/// `ExtensionType`, 2-byte `Length`) plus the Borsh-packed metadata.
+///
+/// `TokenMetadata::tlv_size_of()` is not the right number here. It assumes the generic
+/// spl-type-length-value header (8-byte discriminator + 4-byte length), so funding with it over-pays
+/// rent for 8 bytes that never get allocated.
+pub fn metadata_tlv_len(metadata: &TokenMetadata) -> Result<usize> {
+    Ok(size_of::<ExtensionType>() + size_of::<Length>() + metadata.get_packed_len()?)
 }
 
 /// Plan the v1 mint (task 1).

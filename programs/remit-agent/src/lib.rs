@@ -141,10 +141,7 @@ impl AgentInstruction {
 
 /// Derive the mandate PDA (the delegate a user approves) for a `(source, destination)` pair.
 pub fn mandate_address(source: &Address, destination: &Address) -> (Address, u8) {
-    Address::find_program_address(
-        &[MANDATE_SEED, source.as_ref(), destination.as_ref()],
-        &ID,
-    )
+    Address::find_program_address(&[MANDATE_SEED, source.as_ref(), destination.as_ref()], &ID)
 }
 
 /// Program entrypoint.
@@ -176,7 +173,11 @@ pub fn process_instruction(
                 return Err(AgentError::MandateMismatch.into());
             }
             let fee = epoch_fee(fee_config.as_ref(), amount)?;
-            solana_msg::msg!("remit-agent: mandate transfer amount={} fee={}", amount, fee);
+            solana_msg::msg!(
+                "remit-agent: mandate transfer amount={} fee={}",
+                amount,
+                fee
+            );
             let transfer = transfer_checked_with_fee(
                 token_program.key,
                 source.key,
@@ -190,8 +191,18 @@ pub fn process_instruction(
             )?;
             solana_cpi::invoke_signed(
                 &transfer,
-                &[source.clone(), mint.clone(), destination.clone(), authority.clone()],
-                &[&[MANDATE_SEED, source.key.as_ref(), destination.key.as_ref(), &[bump]]],
+                &[
+                    source.clone(),
+                    mint.clone(),
+                    destination.clone(),
+                    authority.clone(),
+                ],
+                &[&[
+                    MANDATE_SEED,
+                    source.key.as_ref(),
+                    destination.key.as_ref(),
+                    &[bump],
+                ]],
             )
         }
         AgentInstruction::ForwardOwnerTransfer { amount } => {
@@ -210,7 +221,12 @@ pub fn process_instruction(
             )?;
             solana_cpi::invoke(
                 &transfer,
-                &[source.clone(), mint.clone(), destination.clone(), authority.clone()],
+                &[
+                    source.clone(),
+                    mint.clone(),
+                    destination.clone(),
+                    authority.clone(),
+                ],
             )
         }
         AgentInstruction::ForwardApprove { amount } => {
@@ -227,7 +243,12 @@ pub fn process_instruction(
             )?;
             solana_cpi::invoke(
                 &approve,
-                &[source.clone(), mint.clone(), delegate.clone(), authority.clone()],
+                &[
+                    source.clone(),
+                    mint.clone(),
+                    delegate.clone(),
+                    authority.clone(),
+                ],
             )
         }
     }
