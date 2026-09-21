@@ -2,6 +2,7 @@
 
 pub mod cluster;
 pub mod error;
+pub mod mint;
 pub mod state;
 pub mod token;
 
