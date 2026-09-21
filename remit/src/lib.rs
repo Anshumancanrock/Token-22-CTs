@@ -19,6 +19,7 @@ pub mod error;
 pub mod mint;
 pub mod state;
 pub mod token;
+pub mod transfer;
 
 pub use {
     cluster::{Cluster, Receipt, PACKET_DATA_SIZE},
