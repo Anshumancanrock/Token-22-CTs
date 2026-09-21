@@ -1,0 +1,36 @@
+[package]
+name = "remit"
+description = "Client library for a Token-2022 remittance stablecoin: fees, KYC freeze/thaw, on-chain metadata, confidential transfers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck = { workspace = true }
+num-traits = { workspace = true }
+solana-address = { workspace = true, features = ["curve25519"] }
+solana-clock = { workspace = true }
+solana-compute-budget-interface = { workspace = true }
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
+solana-message = { workspace = true }
+solana-program-error = { workspace = true }
+solana-signer = { workspace = true }
+solana-system-interface = { workspace = true }
+solana-transaction-error = { workspace = true }
+solana-zk-elgamal-proof-interface = { workspace = true }
+solana-zk-sdk = { workspace = true }
+solana-zk-sdk-pod = { workspace = true }
+spl-associated-token-account-interface = { workspace = true }
+spl-record = { workspace = true }
+spl-token-2022-interface = { workspace = true }
+spl-token-confidential-transfer-proof-generation = { workspace = true }
+spl-token-metadata-interface = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+litesvm = { workspace = true }
+remit-agent = { path = "../programs/remit-agent", features = ["no-entrypoint"] }
+solana-signature = { workspace = true }
+solana-transaction = { workspace = true }

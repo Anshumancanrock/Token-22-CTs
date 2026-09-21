@@ -1,0 +1,28 @@
+[package]
+name = "remit-agent"
+description = "Minimal delegate agent: moves tokens from a user's account under an Approve'd allowance (CPI Guard compatible)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+solana-account-info = { workspace = true }
+solana-address = { workspace = true, features = ["curve25519", "decode"] }
+solana-clock = { workspace = true }
+solana-cpi = { workspace = true }
+solana-instruction = { workspace = true }
+solana-msg = { workspace = true }
+solana-program-entrypoint = { workspace = true }
+solana-program-error = { workspace = true }
+solana-sysvar = { workspace = true }
+spl-token-2022-interface = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
