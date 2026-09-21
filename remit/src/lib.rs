@@ -3,6 +3,7 @@
 pub mod cluster;
 pub mod error;
 pub mod state;
+pub mod token;
 
 pub use {
     cluster::{Cluster, Receipt, PACKET_DATA_SIZE},
