@@ -32,6 +32,7 @@ use {
             transfer_fee::{instruction::transfer_checked_with_fee, TransferFeeConfig},
             BaseStateWithExtensions, StateWithExtensions,
         },
+        instruction::approve_checked,
         state::Mint,
     },
 };
@@ -193,8 +194,41 @@ pub fn process_instruction(
                 &[&[MANDATE_SEED, source.key.as_ref(), destination.key.as_ref(), &[bump]]],
             )
         }
-        AgentInstruction::ForwardOwnerTransfer { .. } | AgentInstruction::ForwardApprove { .. } => {
-            Err(ProgramError::InvalidInstructionData)
+        AgentInstruction::ForwardOwnerTransfer { amount } => {
+            let destination = third;
+            let fee = epoch_fee(fee_config.as_ref(), amount)?;
+            let transfer = transfer_checked_with_fee(
+                token_program.key,
+                source.key,
+                mint.key,
+                destination.key,
+                authority.key,
+                &[],
+                amount,
+                decimals,
+                fee,
+            )?;
+            solana_cpi::invoke(
+                &transfer,
+                &[source.clone(), mint.clone(), destination.clone(), authority.clone()],
+            )
+        }
+        AgentInstruction::ForwardApprove { amount } => {
+            let delegate = third;
+            let approve = approve_checked(
+                token_program.key,
+                source.key,
+                mint.key,
+                delegate.key,
+                authority.key,
+                &[],
+                amount,
+                decimals,
+            )?;
+            solana_cpi::invoke(
+                &approve,
+                &[source.clone(), mint.clone(), delegate.clone(), authority.clone()],
+            )
         }
     }
 }
@@ -222,6 +256,82 @@ fn epoch_fee(fee_config: Option<&TransferFeeConfig>, amount: u64) -> Result<u64,
                 .calculate_epoch_fee(epoch, amount)
                 .ok_or_else(|| AgentError::FeeOverflow.into())
         }
+    }
+}
+
+/// Instruction builders for clients.
+pub mod instruction {
+    use {
+        super::*,
+        solana_instruction::{AccountMeta, Instruction},
+    };
+
+    fn build(accounts: Vec<AccountMeta>, instruction: AgentInstruction) -> Instruction {
+        Instruction {
+            program_id: ID,
+            accounts,
+            data: instruction.pack(),
+        }
+    }
+
+    /// Build [`AgentInstruction::ExecuteMandate`]. No signer is needed: the PDA signs on-chain.
+    pub fn execute_mandate(
+        source: &Address,
+        mint: &Address,
+        destination: &Address,
+        amount: u64,
+    ) -> Instruction {
+        let (mandate, _) = mandate_address(source, destination);
+        build(
+            vec![
+                AccountMeta::new(*source, false),
+                AccountMeta::new_readonly(*mint, false),
+                AccountMeta::new(*destination, false),
+                AccountMeta::new_readonly(mandate, false),
+                AccountMeta::new_readonly(spl_token_2022_interface::ID, false),
+            ],
+            AgentInstruction::ExecuteMandate { amount },
+        )
+    }
+
+    /// Build [`AgentInstruction::ForwardOwnerTransfer`] (negative control).
+    pub fn forward_owner_transfer(
+        source: &Address,
+        mint: &Address,
+        destination: &Address,
+        owner: &Address,
+        amount: u64,
+    ) -> Instruction {
+        build(
+            vec![
+                AccountMeta::new(*source, false),
+                AccountMeta::new_readonly(*mint, false),
+                AccountMeta::new(*destination, false),
+                AccountMeta::new_readonly(*owner, true),
+                AccountMeta::new_readonly(spl_token_2022_interface::ID, false),
+            ],
+            AgentInstruction::ForwardOwnerTransfer { amount },
+        )
+    }
+
+    /// Build [`AgentInstruction::ForwardApprove`] (negative control).
+    pub fn forward_approve(
+        source: &Address,
+        mint: &Address,
+        delegate: &Address,
+        owner: &Address,
+        amount: u64,
+    ) -> Instruction {
+        build(
+            vec![
+                AccountMeta::new(*source, false),
+                AccountMeta::new_readonly(*mint, false),
+                AccountMeta::new_readonly(*delegate, false),
+                AccountMeta::new_readonly(*owner, true),
+                AccountMeta::new_readonly(spl_token_2022_interface::ID, false),
+            ],
+            AgentInstruction::ForwardApprove { amount },
+        )
     }
 }
 
