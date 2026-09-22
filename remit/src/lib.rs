@@ -18,6 +18,7 @@ pub mod cluster;
 pub mod error;
 pub mod kyc;
 pub mod mint;
+pub mod proofs;
 pub mod state;
 pub mod token;
 pub mod transfer;
