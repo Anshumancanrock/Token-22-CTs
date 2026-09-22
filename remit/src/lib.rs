@@ -4,7 +4,7 @@
 //!
 //! | Assignment task | Module |
 //! |---|---|
-//! | 1. Mint with `TransferFeeConfig` + `MetadataPointer` (→ itself) + `DefaultAccountState(Frozen)` + `MintCloseAuthority` | [`mint`] |
+//! | 1. Mint with `TransferFeeConfig` + `MetadataPointer` (to the mint itself) + `DefaultAccountState(Frozen)` + `MintCloseAuthority` | [`mint`] |
 //! | 2. Transfers through `transfer_checked_with_fee`, fee from `calculate_epoch_fee(current_epoch, amount)` | [`transfer`] |
 //! | 3. State read only through `StateWithExtensions` | [`state`] |
 //! | 4. KYC unfreeze path (`ThawAccount`, never the mint default) | [`kyc`] |
@@ -15,6 +15,7 @@
 //! LiteSVM (the test-suite) or an RPC node.
 
 pub mod cluster;
+pub mod compliance;
 pub mod confidential;
 pub mod error;
 pub mod kyc;
