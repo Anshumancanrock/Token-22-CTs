@@ -15,6 +15,7 @@
 //! LiteSVM (the test-suite) or an RPC node.
 
 pub mod cluster;
+pub mod confidential;
 pub mod error;
 pub mod kyc;
 pub mod mint;

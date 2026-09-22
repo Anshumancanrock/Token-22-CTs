@@ -1913,6 +1913,7 @@ dependencies = [
  "spl-associated-token-account-interface",
  "spl-record",
  "spl-token-2022-interface",
+ "spl-token-confidential-transfer-proof-extraction",
  "spl-token-confidential-transfer-proof-generation",
  "spl-token-metadata-interface",
  "spl-type-length-value",

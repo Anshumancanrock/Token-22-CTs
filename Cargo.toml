@@ -35,6 +35,7 @@ solana-zk-sdk-pod = "0.1.2"
 spl-associated-token-account-interface = "2.0.0"
 spl-record = { version = "0.4.0", features = ["no-entrypoint"] }
 spl-token-2022-interface = "3.1.1"
+spl-token-confidential-transfer-proof-extraction = "0.6.1"
 spl-token-confidential-transfer-proof-generation = "0.6.1"
 spl-token-metadata-interface = "1.0.1"
 spl-type-length-value = "0.9.1"
