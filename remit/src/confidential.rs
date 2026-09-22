@@ -22,6 +22,7 @@
 
 use {
     crate::{
+        proofs::ProofAccounts,
         state::{load_account, load_mint, AccountSnapshot},
         Cluster, Error, Result, TOKEN_2022_PROGRAM_ID,
     },
@@ -29,11 +30,12 @@ use {
     solana_instruction::Instruction,
     solana_keypair::Keypair,
     solana_signer::Signer,
+    solana_zk_elgamal_proof_interface::instruction::ProofInstruction,
     solana_zk_sdk::{
         encryption::{
             auth_encryption::{AeCiphertext, AeKey},
             derivation::derive_confidential_keys,
-            elgamal::{ElGamalCiphertext, ElGamalKeypair, ElGamalSecretKey},
+            elgamal::{ElGamalCiphertext, ElGamalKeypair, ElGamalPubkey, ElGamalSecretKey},
         },
         zk_elgamal_proof_program::build_pubkey_validity_proof_data,
     },
@@ -46,7 +48,10 @@ use {
         instruction::reallocate,
     },
     spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation,
-    spl_token_confidential_transfer_proof_generation::TRANSFER_AMOUNT_LO_BITS,
+    spl_token_confidential_transfer_proof_generation::{
+        transfer_with_fee::transfer_with_fee_split_proof_data, withdraw::withdraw_proof_data,
+        TRANSFER_AMOUNT_LO_BITS,
+    },
     std::num::NonZeroI8,
 };
 
@@ -276,4 +281,240 @@ pub fn apply_pending_balance(
     )?;
     cluster.send(&[instruction], &[owner])?;
     Ok(new_available)
+}
+
+/// What a confidential transfer revealed, and to whom.
+#[derive(Clone, Copy, Debug)]
+pub struct ConfidentialTransfer {
+    /// Gross amount (known to sender, recipient and auditor only).
+    pub amount: u64,
+    /// Fee withheld, computed with `calculate_epoch_fee(current_epoch, amount)`.
+    pub fee: u64,
+    /// Epoch the fee schedule was taken from.
+    pub epoch: u64,
+    /// The transfer amount's low 16 bits, encrypted under the auditor key.
+    pub auditor_ciphertext_lo: PodElGamalCiphertext,
+    /// The transfer amount's high 32 bits, encrypted under the auditor key.
+    pub auditor_ciphertext_hi: PodElGamalCiphertext,
+}
+
+impl ConfidentialTransfer {
+    /// What the auditor learns: decrypt the transfer amount with the auditor secret key.
+    pub fn audit(&self, auditor: &ElGamalKeypair) -> Result<u64> {
+        decrypt_lo_hi(
+            auditor.secret(),
+            self.auditor_ciphertext_lo,
+            self.auditor_ciphertext_hi,
+        )
+    }
+}
+
+/// Step 5, owner: send `amount` confidentially from `source` to `destination`.
+///
+/// The mint has a `TransferFeeConfig`, so this is a `TransferWithFee` backed by five proofs,
+/// verified into context-state accounts first (see [`crate::proofs`]).
+pub fn transfer(
+    cluster: &mut impl Cluster,
+    source: &Address,
+    destination: &Address,
+    owner: &Keypair,
+    keys: &ConfidentialKeys,
+    amount: u64,
+) -> Result<ConfidentialTransfer> {
+    let source_account = load_account(cluster, source)?;
+    let destination_account = load_account(cluster, destination)?;
+    let mint = load_mint(cluster, &source_account.mint)?;
+
+    let source_state = source_account.require_confidential()?;
+    let available = available_balance(&source_account, keys)?;
+    if available < amount {
+        return Err(Error::InsufficientConfidentialBalance {
+            available,
+            requested: amount,
+        });
+    }
+    let destination_pubkey =
+        ElGamalPubkey::try_from(destination_account.require_confidential()?.elgamal_pubkey)
+            .map_err(|_| crypto("invalid destination ElGamal pubkey"))?;
+    let confidential_mint = mint
+        .confidential
+        .ok_or_else(|| Error::Invalid("mint has no ConfidentialTransferMint".into()))?;
+    let auditor = confidential_mint
+        .auditor_elgamal_pubkey
+        .get()
+        .map(ElGamalPubkey::try_from)
+        .transpose()
+        .map_err(|_| crypto("invalid auditor ElGamal pubkey"))?;
+    let withdraw_withheld = ElGamalPubkey::try_from(
+        mint.confidential_fee
+            .ok_or_else(|| Error::Invalid("mint has no ConfidentialTransferFeeConfig".into()))?
+            .withdraw_withheld_authority_elgamal_pubkey,
+    )
+    .map_err(|_| crypto("invalid withdraw-withheld ElGamal pubkey"))?;
+
+    // Same epoch-aware schedule selection as the public path (task 2): the program checks the fee
+    // proof against `get_epoch_fee(Clock::epoch)`.
+    let epoch = cluster.epoch();
+    let fee_config = mint.require_transfer_fee()?;
+    let schedule = fee_config.get_epoch_fee(epoch);
+    let fee = crate::transfer::expected_fee(&mint, epoch, amount)?;
+
+    let proof = transfer_with_fee_split_proof_data(
+        &elgamal_ciphertext(source_state.available_balance)?,
+        &AeCiphertext::try_from(source_state.decryptable_available_balance)
+            .map_err(|_| crypto("invalid decryptable balance"))?,
+        amount,
+        &keys.elgamal,
+        &keys.ae,
+        &destination_pubkey,
+        auditor.as_ref(),
+        &withdraw_withheld,
+        u16::from(schedule.transfer_fee_basis_points),
+        u64::from(schedule.maximum_fee),
+    )
+    .map_err(|error| Error::Crypto(error.to_string()))?;
+
+    let auditor_lo = proof
+        .transfer_amount_ciphertext_validity_proof_data_with_ciphertext
+        .ciphertext_lo;
+    let auditor_hi = proof
+        .transfer_amount_ciphertext_validity_proof_data_with_ciphertext
+        .ciphertext_hi;
+    let new_decryptable: DecryptableBalance = keys.ae.encrypt(available - amount).into();
+
+    let mut accounts = ProofAccounts::default();
+    let result = (|| {
+        let equality = accounts.verify(
+            cluster,
+            ProofInstruction::VerifyCiphertextCommitmentEquality,
+            &proof.equality_proof_data,
+        )?;
+        let amount_validity = accounts.verify(
+            cluster,
+            ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity,
+            &proof
+                .transfer_amount_ciphertext_validity_proof_data_with_ciphertext
+                .proof_data,
+        )?;
+        let fee_sigma = accounts.verify(
+            cluster,
+            ProofInstruction::VerifyPercentageWithCap,
+            &proof.percentage_with_cap_proof_data,
+        )?;
+        let fee_validity = accounts.verify(
+            cluster,
+            ProofInstruction::VerifyBatchedGroupedCiphertext2HandlesValidity,
+            &proof.fee_ciphertext_validity_proof_data,
+        )?;
+        let range = accounts.verify_via_record(
+            cluster,
+            ProofInstruction::VerifyBatchedRangeProofU256,
+            &proof.range_proof_data,
+        )?;
+        let instructions = ct::transfer_with_fee(
+            &TOKEN_2022_PROGRAM_ID,
+            source,
+            &mint.address,
+            destination,
+            &new_decryptable,
+            &auditor_lo,
+            &auditor_hi,
+            &owner.pubkey(),
+            &[],
+            ProofLocation::ContextStateAccount(&equality),
+            ProofLocation::ContextStateAccount(&amount_validity),
+            ProofLocation::ContextStateAccount(&fee_sigma),
+            ProofLocation::ContextStateAccount(&fee_validity),
+            ProofLocation::ContextStateAccount(&range),
+        )?;
+        cluster.send(&instructions, &[owner])
+    })();
+    accounts.close_after(cluster, result)?;
+
+    Ok(ConfidentialTransfer {
+        amount,
+        fee,
+        epoch,
+        auditor_ciphertext_lo: auditor_lo,
+        auditor_ciphertext_hi: auditor_hi,
+    })
+}
+
+/// Step 6, owner: move `amount` from the available confidential balance back to the public
+/// balance. Pending funds are not spendable, so apply them first.
+pub fn withdraw(
+    cluster: &mut impl Cluster,
+    token_account: &Address,
+    owner: &Keypair,
+    keys: &ConfidentialKeys,
+    amount: u64,
+) -> Result<()> {
+    let account = load_account(cluster, token_account)?;
+    let available = available_balance(&account, keys)?;
+    if available < amount {
+        return Err(Error::InsufficientConfidentialBalance {
+            available,
+            requested: amount,
+        });
+    }
+    let available_ciphertext =
+        elgamal_ciphertext(account.require_confidential()?.available_balance)?;
+    withdraw_against(
+        cluster,
+        token_account,
+        owner,
+        keys,
+        &available_ciphertext,
+        available,
+        amount,
+    )
+}
+
+/// [`withdraw`] with the proofs built against an arbitrary `balance_ciphertext` that encrypts
+/// `balance`, and no local checks. `withdraw` passes the account's available balance. The tests
+/// pass the *pending* balance instead: the proofs are valid, and Token-2022 still rejects them
+/// because it checks them against the real available balance. The chain enforces "apply before
+/// spend", not the client.
+pub fn withdraw_against(
+    cluster: &mut impl Cluster,
+    token_account: &Address,
+    owner: &Keypair,
+    keys: &ConfidentialKeys,
+    balance_ciphertext: &ElGamalCiphertext,
+    balance: u64,
+    amount: u64,
+) -> Result<()> {
+    let account = load_account(cluster, token_account)?;
+    let mint = load_mint(cluster, &account.mint)?;
+    let proof = withdraw_proof_data(balance_ciphertext, balance, amount, &keys.elgamal)
+        .map_err(|error| Error::Crypto(error.to_string()))?;
+    let new_decryptable: DecryptableBalance = keys.ae.encrypt(balance - amount).into();
+
+    let mut accounts = ProofAccounts::default();
+    let result = (|| {
+        let equality = accounts.verify(
+            cluster,
+            ProofInstruction::VerifyCiphertextCommitmentEquality,
+            &proof.equality_proof_data,
+        )?;
+        let range = accounts.verify(
+            cluster,
+            ProofInstruction::VerifyBatchedRangeProofU64,
+            &proof.range_proof_data,
+        )?;
+        let instructions = ct::withdraw(
+            &TOKEN_2022_PROGRAM_ID,
+            token_account,
+            &mint.address,
+            amount,
+            mint.decimals,
+            &new_decryptable,
+            &owner.pubkey(),
+            &[],
+            ProofLocation::ContextStateAccount(&equality),
+            ProofLocation::ContextStateAccount(&range),
+        )?;
+        cluster.send(&instructions, &[owner])
+    })();
+    accounts.close_after(cluster, result).map(|_| ())
 }
