@@ -23,6 +23,7 @@ solana-message = { version = "4.4.1", features = ["wincode"] }
 solana-msg = "3.1.0"
 solana-program-entrypoint = "3.1.1"
 solana-program-error = "3.0.1"
+solana-program-pack = "3.1.0"
 solana-signature = "3.4.1"
 solana-signer = "3.0.1"
 solana-system-interface = { version = "3.2.0", features = ["bincode"] }

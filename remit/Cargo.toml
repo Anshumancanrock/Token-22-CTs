@@ -34,5 +34,6 @@ thiserror = { workspace = true }
 litesvm = { workspace = true }
 remit-agent = { path = "../programs/remit-agent", features = ["no-entrypoint"] }
 solana-clock = { workspace = true }
+solana-program-pack = { workspace = true }
 solana-signature = { workspace = true }
 solana-transaction = { workspace = true }
