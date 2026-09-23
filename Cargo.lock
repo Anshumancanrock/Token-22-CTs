@@ -650,6 +650,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "cpi-guard-probe"
+version = "0.1.0"
+dependencies = [
+ "solana-account-info",
+ "solana-address 2.6.1",
+ "solana-clock",
+ "solana-cpi",
+ "solana-instruction",
+ "solana-program-entrypoint",
+ "solana-program-error",
+ "solana-sysvar",
+ "spl-token-2022-interface",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1892,6 +1907,7 @@ name = "remit"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "cpi-guard-probe",
  "litesvm",
  "num-traits",
  "remit-agent",

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["remit", "programs/remit-agent"]
+members = ["remit", "programs/remit-agent", "programs/cpi-guard-probe"]
 
 [workspace.package]
 version = "0.1.0"

@@ -31,6 +31,7 @@ spl-type-length-value = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+cpi-guard-probe = { path = "../programs/cpi-guard-probe", features = ["no-entrypoint"] }
 litesvm = { workspace = true }
 remit-agent = { path = "../programs/remit-agent", features = ["no-entrypoint"] }
 solana-clock = { workspace = true }

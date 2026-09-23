@@ -1,8 +1,9 @@
 .PHONY: build-sbf test report lint fixtures screenshot
 
-# The CPI Guard tests load the agent program from target/deploy.
+# The CPI Guard tests load both SBF programs from target/deploy.
 build-sbf:
 	cargo build-sbf --manifest-path programs/remit-agent/Cargo.toml
+	cargo build-sbf --manifest-path programs/cpi-guard-probe/Cargo.toml
 
 test: build-sbf
 	cargo test --workspace
