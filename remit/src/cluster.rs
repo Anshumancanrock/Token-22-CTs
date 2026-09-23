@@ -42,6 +42,9 @@ pub trait Cluster {
 
     /// Sign with the fee payer plus `signers`, submit, and wait for the outcome.
     ///
+    /// `signers` are the signatures the instructions require besides the fee payer's. Flows pass
+    /// exactly those; an implementation may skip a signer that equals the fee payer.
+    ///
     /// Implementations must refuse transactions above [`PACKET_DATA_SIZE`], so that every flow that
     /// passes the tests also fits on a real cluster.
     fn send(&mut self, instructions: &[Instruction], signers: &[&Keypair]) -> Result<Receipt>;

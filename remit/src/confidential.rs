@@ -116,13 +116,27 @@ pub fn decrypt_lo_hi(
 }
 
 /// The owner's available (spendable) confidential balance.
+///
+/// It is read from `decryptable_available_balance`, which the owner writes at every
+/// `ApplyPendingBalance`. If a credit landed between reading the pending balance and applying it,
+/// the program records the mismatch (`expected_pending_balance_credit_counter` differs from
+/// `actual_pending_balance_credit_counter`) and the decryptable balance no longer matches the
+/// encrypted one. That case is reported as an error instead of letting proofs fail later.
 pub fn available_balance(account: &AccountSnapshot, keys: &ConfidentialKeys) -> Result<u64> {
-    let decryptable = AeCiphertext::try_from(
-        account
-            .require_confidential()?
-            .decryptable_available_balance,
-    )
-    .map_err(|_| crypto("invalid decryptable balance"))?;
+    let state = account.require_confidential()?;
+    let (expected, actual) = (
+        u64::from(state.expected_pending_balance_credit_counter),
+        u64::from(state.actual_pending_balance_credit_counter),
+    );
+    if expected != actual {
+        return Err(Error::Invalid(format!(
+            "decryptable balance of {} is stale: the last ApplyPendingBalance covered {expected} \
+             credits but {actual} had arrived; rebuild it from the missed credits first",
+            account.address
+        )));
+    }
+    let decryptable = AeCiphertext::try_from(state.decryptable_available_balance)
+        .map_err(|_| crypto("invalid decryptable balance"))?;
     keys.ae
         .decrypt(&decryptable)
         .ok_or_else(|| crypto("decryptable balance does not decrypt with this AE key"))

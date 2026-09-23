@@ -18,7 +18,10 @@ use {
     solana_signer::Signer,
     solana_zk_sdk::encryption::elgamal::ElGamalCiphertext,
     solana_zk_sdk_pod::encryption::elgamal::PodElGamalPubkey,
-    spl_token_2022_interface::error::TokenError,
+    spl_token_2022_interface::{
+        error::TokenError,
+        extension::confidential_transfer::instruction::apply_pending_balance as apply_pending_balance_instruction,
+    },
     spl_token_confidential_transfer_proof_generation::try_combine_lo_hi_ciphertexts,
 };
 
@@ -260,4 +263,31 @@ fn the_chain_rejects_a_withdraw_that_spends_pending_funds() {
     apply_pending_balance(&mut coin.svm, &bob_account, &bob, &bob_keys).unwrap();
     withdraw(&mut coin.svm, &bob_account, &bob, &bob_keys, 50 * RUSD).unwrap();
     assert_eq!(coin.account(&bob_account).amount, 50 * RUSD);
+}
+
+#[test]
+fn a_stale_decryptable_balance_is_reported_before_any_proof_is_built() {
+    let mut coin = Stablecoin::v2();
+    let bob = Keypair::new();
+    let (bob_account, bob_keys) = coin.onboard_confidential(&bob);
+    coin.fund(&bob_account, 50 * RUSD);
+    deposit(&mut coin.svm, &bob_account, &bob, 30 * RUSD).unwrap();
+    deposit(&mut coin.svm, &bob_account, &bob, 20 * RUSD).unwrap();
+
+    // Bob's wallet only saw the first deposit when it applied: it claims one credit and a
+    // decryptable balance of 30. The program accepts this and records the counter mismatch.
+    let apply = apply_pending_balance_instruction(
+        &remit::TOKEN_2022_PROGRAM_ID,
+        &bob_account,
+        1,
+        &bob_keys.ae.encrypt(30 * RUSD).into(),
+        &bob.pubkey(),
+        &[],
+    )
+    .unwrap();
+    coin.svm.send(&[apply], &[&bob]).unwrap();
+
+    let error = available_balance(&coin.account(&bob_account), &bob_keys).unwrap_err();
+    assert!(error.to_string().contains("stale"), "{error}");
+    assert!(withdraw(&mut coin.svm, &bob_account, &bob, &bob_keys, RUSD).is_err());
 }

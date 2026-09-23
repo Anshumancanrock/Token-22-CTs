@@ -48,15 +48,15 @@ pub fn seize(
         fee,
     )?;
     let freeze = &freeze_authority.pubkey();
-    let instructions = if account.is_frozen() {
-        vec![
+    if account.is_frozen() {
+        let instructions = [
             thaw_account(&TOKEN_2022_PROGRAM_ID, from, &mint.address, freeze, &[])?,
             transfer,
             freeze_account(&TOKEN_2022_PROGRAM_ID, from, &mint.address, freeze, &[])?,
-        ]
+        ];
+        cluster.send(&instructions, &[freeze_authority, permanent_delegate])?;
     } else {
-        vec![transfer]
-    };
-    cluster.send(&instructions, &[freeze_authority, permanent_delegate])?;
+        cluster.send(&[transfer], &[permanent_delegate])?;
+    }
     Ok(FeeTransfer { amount, fee, epoch })
 }
