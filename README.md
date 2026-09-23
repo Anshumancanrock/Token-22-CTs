@@ -13,6 +13,8 @@ The tests run the real Token-2022 v11 program, the ATA program and the ZK ElGama
 
 ![all tests passing](docs/tests-passing.png)
 
+The image is rendered from a captured `make test` run (`make screenshot` regenerates it).
+
 ## Running the tests
 
 ```sh
@@ -172,20 +174,23 @@ With the manual policy, a configured account cannot deposit (`ConfidentialTransf
 
 Pending funds are not spendable. The recipient's `withdraw` before applying is refused on the client (`InsufficientConfidentialBalance`), and the chain enforces the same rule by itself. zk-sdk v7's proof builders check their inputs and fail with `InconsistentInput` on a false balance claim, so the attack in `the_chain_rejects_a_withdraw_that_spends_pending_funds` builds valid proofs over the pending ciphertext, which really does hold the funds. Both proofs verify, and Token-2022 still rejects the withdraw with `ConfidentialTransferBalanceMismatch`, because it recomputes `available - amount` and compares it with the proven ciphertext. The failed attempt still closes its proof accounts, so no rent is stranded.
 
+The owner's spendable balance is read from `decryptable_available_balance`, which the owner rewrites at every `ApplyPendingBalance`. If a credit lands between reading the pending balance and applying it, that value falls behind the encrypted balance. Token-2022 records the mismatch in the account's credit counters, and `available_balance` checks them and reports the stale state before any proof is built (`a_stale_decryptable_balance_is_reported_before_any_proof_is_built`).
+
 ### Getting the proofs on-chain
 
-A confidential transfer on a fee mint needs five proofs, and a withdraw needs two. Each one is verified by the ZK ElGamal Proof program into a context-state account that the Token-2022 instruction then references. How each proof travels depends on its size (the sizes are asserted in `proofs::tests`):
+A confidential transfer on a fee mint needs five proofs, and a withdraw needs two. Token-2022 takes a proof either inline (the verify instruction sits in the same transaction, and the program reads it through the instructions sysvar) or from a context-state account that the ZK ElGamal Proof program filled earlier. How each proof travels depends on its size (the sizes are asserted in `proofs::tests`):
 
 | proof | bytes | delivery |
 |---|---:|---|
-| pubkey validity (configure) | 96 | inline, same transaction as `ConfigureAccount` |
-| ciphertext-commitment equality | 320 | create context + verify in one transaction |
-| batched grouped-ciphertext validity, 2 / 3 handles | 416 / 544 | create context + verify in one transaction |
-| percentage-with-cap (fee) | 360 | create context + verify in one transaction |
-| batched range proof U64 (withdraw) | 936 | fits alone but not next to `CreateAccount`: two transactions |
-| batched range proof U256 (transfer with fee) | 1064 | written to an spl-record account, then verified from the account |
+| pubkey validity (configure) | 96 | inline in the `ConfigureAccount` transaction |
+| ciphertext-commitment equality, withdraw | 320 | inline in the `Withdraw` transaction |
+| ciphertext-commitment equality, transfer | 320 | own transaction: create context + verify |
+| batched grouped-ciphertext validity, 2 / 3 handles | 416 / 544 | own transaction: create context + verify |
+| percentage-with-cap (fee) | 360 | own transaction: create context + verify |
+| batched range proof U64 (withdraw) | 936 | record account, verified inside the `Withdraw` transaction |
+| batched range proof U256 (transfer with fee) | 1064 | record account, verified inside the `TransferWithFee` transaction |
 
-The U256 range proof cannot fit in any transaction. The smallest possible carrier, with only the fee payer, no context account and no compute-budget instruction, is 1235 bytes. `proofs::ProofAccounts::verify_via_record` writes the proof into a record account in the fewest chunks that fit (it binary-searches the chunk size, which is why the largest transaction in the suite is exactly 1232 bytes), then verifies it with `encode_verify_proof_from_account`. The record program is not bundled with LiteSVM, so the mainnet binary is in `fixtures/`.
+A context account is always created and verified in the same transaction. The two range proofs cannot sit next to a `CreateAccount`: the U64 proof only fits in a transaction of its own, and the U256 proof fits in none (the smallest possible carrier, with only the fee payer, no context account and no compute-budget instruction, is 1235 bytes). Creating the context in one transaction and verifying in the next would leave an empty account owned by the proof program on-chain in between. Anyone could verify their own proof into it, become its authority, and later close it and keep the rent. So `ProofAccounts::stage_from_record` writes each range proof into an spl-record account in the fewest chunks that fit (it binary-searches the chunk size, which is why the largest transaction in the suite is exactly 1232 bytes). `ProofAccounts::consume` then sends one transaction that writes the last chunk if there is room, creates the context, verifies the proof from the record, runs the Token-2022 instruction and closes every proof account. If anything fails, the accounts created so far are closed in a separate transaction. The record program is not bundled with LiteSVM, so the mainnet binary is in `fixtures/`.
 
 The ZK ElGamal Proof program is a builtin. Without a `SetComputeUnitLimit`, a builtin instruction gets 3,000 CU, which is less than every verification costs (closing a context costs 3,300 and the U256 range proof 368,000). Every proof transaction therefore sets an explicit limit sized from the program's published costs.
 
@@ -200,8 +205,8 @@ What each flow costs, from `make report`:
 | ApproveAccount | 1 | 334 | 1785 |
 | Deposit | 1 | 343 | 10866 |
 | ApplyPendingBalance | 1 | 345 | 8063 |
-| confidential TransferWithFee (5 proofs) | 9 | 1232 | 476401 |
-| Withdraw (2 proofs) | 5 | 1181 | 131311 |
+| confidential TransferWithFee (5 proofs) | 7 | 1232 | 476249 |
+| Withdraw (2 proofs) | 2 | 1232 | 130673 |
 
 ## Finding: a sanctioned user deposits into the confidential system before the permanent delegate acts
 
@@ -251,7 +256,7 @@ To deploy the program to devnet, generate your own program keypair and replace t
 | 3. `StateWithExtensions` only | `task3_state.rs` (3) |
 | 4. per-account thaw after KYC, separate from the mint default | `task4_kyc.rs` (5) |
 | 5. re-issue with `PermanentDelegate` + confidential, manual approval | `task5_reissue.rs` (4) |
-| 6. configure, approve, deposit, apply, transfer, withdraw | `task6_confidential.rs` (4) |
+| 6. configure, approve, deposit, apply, transfer, withdraw | `task6_confidential.rs` (5) |
 | written finding | `finding_sanctions_race.rs` (2) |
 | extension challenge | `extension_cpi_guard.rs` (3) |
 | packet limit and costs | `cost_report.rs` (1), `proofs::tests` (3) |
