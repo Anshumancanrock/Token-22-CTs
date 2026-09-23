@@ -2,8 +2,8 @@
 //!
 //! `LiteSVM::new()` runs the mainnet feature set with the Token-2022 v11 program, the ATA program
 //! and the ZK ElGamal Proof program built in. On top of that the harness loads the mainnet
-//! `spl-record` binary (`fixtures/spl_record.so`) and, for the CPI Guard tests, the `remit-agent`
-//! program built with `cargo build-sbf`.
+//! `spl-record` binary (`fixtures/spl_record.so`) and, for the CPI Guard tests, the two programs
+//! built with `make build-sbf`.
 
 #![allow(dead_code)]
 
@@ -58,23 +58,25 @@ impl Svm {
         }
     }
 
-    /// Also load the `remit-agent` SBF program.
-    pub fn with_agent(mut self) -> Self {
-        let path = std::env::var("REMIT_AGENT_SO")
+    /// Also load the SBF programs built with `make build-sbf`: `remit-agent` and the
+    /// `cpi-guard-probe` test fixture. `SBF_OUT_DIR` overrides the default `target/deploy`.
+    pub fn with_sbf_programs(mut self) -> Self {
+        let dir = std::env::var("SBF_OUT_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/deploy/remit_agent.so")
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/deploy"));
+        for (id, name) in [
+            (remit_agent::ID, "remit_agent"),
+            (cpi_guard_probe::ID, "cpi_guard_probe"),
+        ] {
+            let path = dir.join(format!("{name}.so"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|_| {
+                panic!(
+                    "{} not found: build the programs first with `make build-sbf`",
+                    path.display()
+                )
             });
-        let bytes = std::fs::read(&path).unwrap_or_else(|_| {
-            panic!(
-                "{} not found: build the program first with `cargo build-sbf --manifest-path \
-                 programs/remit-agent/Cargo.toml` (or `make test`)",
-                path.display()
-            )
-        });
-        self.svm
-            .add_program(remit_agent::ID, &bytes)
-            .expect("load remit-agent");
+            self.svm.add_program(id, &bytes).expect("load program");
+        }
         self
     }
 
