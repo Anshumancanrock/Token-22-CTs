@@ -231,3 +231,19 @@ fn issuer_collects_the_withheld_fees_as_revenue() {
     // Nothing was created or destroyed: supply is unchanged.
     assert_eq!(coin.mint().supply, 10_000 * RUSD);
 }
+
+#[test]
+fn only_the_owner_or_its_delegate_can_move_funds() {
+    let Setup {
+        mut coin,
+        alice_account,
+        bob_account,
+        ..
+    } = setup();
+    let mallory = Keypair::new();
+    assert_token_error(
+        transfer_with_fee(&mut coin.svm, &alice_account, &bob_account, &mallory, RUSD),
+        TokenError::OwnerMismatch,
+    );
+    assert_eq!(coin.account(&alice_account).amount, 10_000 * RUSD);
+}

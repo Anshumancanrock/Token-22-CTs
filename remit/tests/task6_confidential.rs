@@ -86,6 +86,21 @@ fn manual_approval_gates_confidential_use() {
     );
     approve_account(&mut coin.svm, &account, &coin.compliance.confidential).unwrap();
     deposit(&mut coin.svm, &account, &alice, 10 * RUSD).unwrap();
+    apply_pending_balance(&mut coin.svm, &account, &alice, &keys).unwrap();
+
+    // Approval also gates receiving: a configured but unapproved account cannot be paid.
+    let bob = Keypair::new();
+    let bob_account = coin.onboard(&bob);
+    let bob_keys = ConfidentialKeys::derive(&bob, &bob_account).unwrap();
+    configure_account(&mut coin.svm, &bob_account, &bob, &bob_keys).unwrap();
+    assert_token_error(
+        transfer(&mut coin.svm, &account, &bob_account, &alice, &keys, RUSD),
+        TokenError::ConfidentialTransferAccountNotApproved,
+    );
+    assert_eq!(
+        available_balance(&coin.account(&account), &keys).unwrap(),
+        10 * RUSD
+    );
 }
 
 #[test]

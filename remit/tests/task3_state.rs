@@ -87,7 +87,11 @@ fn no_raw_unpack_anywhere_in_the_codebase() {
         "unpack_from_slice",
     ];
     let mut decoders = 0;
-    for dir in ["remit/src", "programs/remit-agent/src"] {
+    for dir in [
+        "remit/src",
+        "programs/remit-agent/src",
+        "programs/cpi-guard-probe/src",
+    ] {
         for entry in std::fs::read_dir(root.join(dir)).unwrap() {
             let path = entry.unwrap().path();
             // Code only: the docs are allowed to name what they forbid.
