@@ -1,25 +1,31 @@
 //! Moving zero-knowledge proofs on-chain within the 1232-byte packet limit.
 //!
 //! Every confidential debit (transfer, withdraw) needs proofs that are too large to travel inside
-//! the Token-2022 instruction's transaction. Each proof is first verified by the ZK ElGamal Proof
-//! program into a **context-state account**, which then stores the verified statement. The
-//! Token-2022 instruction references that account (`ProofLocation::ContextStateAccount`). Afterwards
-//! the accounts are closed and their rent is refunded.
+//! the Token-2022 instruction's transaction. A proof is verified by the ZK ElGamal Proof program
+//! into a **context-state account**, which stores the verified statement, and the Token-2022
+//! instruction references that account (`ProofLocation::ContextStateAccount`). Afterwards the
+//! accounts are closed and their rent goes back to the payer.
 //!
-//! How each proof is delivered depends on its size:
+//! How each proof travels depends on its size:
 //!
 //! | proof | bytes | delivery |
 //! |---|---|---|
-//! | pubkey validity (configure) | 96 | inline, same transaction as `ConfigureAccount` |
-//! | ciphertext-commitment equality | 320 | create context + verify, one transaction |
-//! | grouped-ciphertext validity (2 / 3 handles) | 416 / 544 | create context + verify, one transaction |
-//! | percentage-with-cap (fee) | 360 | create context + verify, one transaction |
-//! | batched range proof U64 (withdraw) | 936 | create context, then verify: two transactions |
-//! | batched range proof U256 (transfer with fee) | 1064 | written to an `spl-record` account in chunks, then verified from the account |
+//! | pubkey validity (configure) | 96 | inline in the `ConfigureAccount` transaction |
+//! | ciphertext-commitment equality, withdraw | 320 | inline in the `Withdraw` transaction |
+//! | ciphertext-commitment equality, transfer | 320 | own transaction: create context + verify |
+//! | grouped-ciphertext validity (2 / 3 handles) | 416 / 544 | own transaction: create context + verify |
+//! | percentage-with-cap (fee) | 360 | own transaction: create context + verify |
+//! | batched range proof U64 (withdraw) | 936 | record account, verified inside the `Withdraw` transaction |
+//! | batched range proof U256 (transfer with fee) | 1064 | record account, verified inside the `TransferWithFee` transaction |
 //!
-//! The U256 range proof is larger than any transaction can carry once the signature, the account
-//! keys and a compute-budget instruction are added. So it is written into a record account first,
-//! and the proof program reads it from there (`encode_verify_proof_from_account`).
+//! A context account is always created and verified **in the same transaction**. The two range
+//! proofs do not fit next to a `CreateAccount` (the U256 one does not fit in any transaction at
+//! all), and splitting creation and verification would leave an empty, proof-program-owned
+//! account on-chain between two transactions. Anyone could verify their own proof into it, make
+//! themselves its authority, and later close it and collect the rent. So range proofs are written
+//! into an `spl-record` account instead, and [`ProofAccounts::consume`] creates their context,
+//! verifies them from the record, runs the Token-2022 instruction and closes every proof account,
+//! all in one transaction.
 //!
 //! The ZK ElGamal Proof program is a builtin. Without a `SetComputeUnitLimit`, each builtin
 //! instruction gets only 3,000 CU, which is less than every verification costs (even closing a
@@ -28,7 +34,7 @@
 use {
     crate::{
         cluster::{fits_in_one_transaction, with_compute_unit_limit},
-        Cluster, Error, Result,
+        Cluster, Error, Receipt, Result,
     },
     bytemuck::Pod,
     solana_address::Address,
@@ -46,8 +52,10 @@ use {
 
 /// Headroom for the system-program and compute-budget instructions sharing a transaction.
 const OVERHEAD_UNITS: u32 = 2_000;
-/// Budget for one `spl-record` `CloseAccount` (a small SBF program).
-const RECORD_CLOSE_UNITS: u32 = 10_000;
+/// Budget for one `spl-record` `CloseAccount` (measured at about 850 CU).
+const RECORD_CLOSE_UNITS: u32 = 5_000;
+/// Budget for one `spl-record` `Write` riding in the consuming transaction (measured at about 650 CU).
+const RECORD_WRITE_UNITS: u32 = 2_000;
 
 /// Compute units the ZK ElGamal Proof program charges for `instruction`.
 pub fn compute_units(instruction: ProofInstruction) -> u32 {
@@ -69,17 +77,32 @@ pub fn compute_units(instruction: ProofInstruction) -> u32 {
     }
 }
 
-/// Context-state and record accounts created for one operation, closed together afterwards.
-#[derive(Debug, Default)]
+/// A record-backed proof whose verification waits for the consuming transaction.
+struct Staged {
+    context: Keypair,
+    /// The last record chunk, if it has not been written yet.
+    tail_write: Option<Instruction>,
+    create: Instruction,
+    verify: Instruction,
+    units: u32,
+}
+
+/// The proof accounts of one confidential operation.
+///
+/// Call [`verify`](Self::verify) or [`stage_from_record`](Self::stage_from_record) for each proof,
+/// then [`consume`](Self::consume) with the Token-2022 instruction. If anything fails before
+/// `consume`, call [`close_after`](Self::close_after) so the accounts created so far are closed.
+#[derive(Default)]
 pub struct ProofAccounts {
-    /// Context-state accounts (owned by the ZK ElGamal Proof program).
-    pub contexts: Vec<Address>,
+    /// Verified context-state accounts (owned by the ZK ElGamal Proof program).
+    contexts: Vec<Address>,
     /// Record accounts holding raw proof bytes (owned by `spl-record`).
-    pub records: Vec<Address>,
+    records: Vec<Address>,
+    staged: Vec<Staged>,
 }
 
 impl ProofAccounts {
-    /// Verify `proof` into a new context-state account and remember it for cleanup.
+    /// Create a context-state account and verify `proof` into it, in one transaction.
     pub fn verify<T, U>(
         &mut self,
         cluster: &mut impl Cluster,
@@ -92,27 +115,31 @@ impl ProofAccounts {
     {
         let payer = cluster.payer();
         let context = Keypair::new();
-        let create = create_context_account::<U>(cluster, &context.pubkey());
-        let verify =
-            instruction.encode_verify_proof(Some(context_info(&context.pubkey(), &payer)), proof);
-        let units = compute_units(instruction) + OVERHEAD_UNITS;
-
-        let together = with_compute_unit_limit(units, vec![create.clone(), verify.clone()]);
-        if fits_in_one_transaction(&together, &payer) {
-            cluster.send(&together, &[&context])?;
-        } else {
-            // Fits alone but not next to CreateAccount (the U64 range proof): two transactions.
-            cluster.send(&[create], &[&context])?;
-            cluster.send(&with_compute_unit_limit(units, vec![verify]), &[])?;
+        let transaction = with_compute_unit_limit(
+            compute_units(instruction) + OVERHEAD_UNITS,
+            vec![
+                create_context_account::<U>(cluster, &context.pubkey()),
+                instruction
+                    .encode_verify_proof(Some(context_info(&context.pubkey(), &payer)), proof),
+            ],
+        );
+        if !fits_in_one_transaction(&transaction, &payer) {
+            return Err(Error::Invalid(format!(
+                "{instruction:?} does not fit next to its CreateAccount; use stage_from_record"
+            )));
         }
-        // Tracked only once verified: an uninitialized context cannot be closed.
+        cluster.send(&transaction, &[&context])?;
         self.contexts.push(context.pubkey());
         Ok(context.pubkey())
     }
 
-    /// Write `proof` into a record account in chunks, then verify it from there into a new
-    /// context-state account. For proofs no transaction can carry (the U256 range proof).
-    pub fn verify_via_record<T, U>(
+    /// Write `proof` into a new record account now, and verify it from there inside the consuming
+    /// transaction. Returns the address its context-state account will have.
+    ///
+    /// The record is created, initialized and filled with as many bytes as fit in the first
+    /// transaction. The last chunk is kept back so [`consume`](Self::consume) can carry it when
+    /// there is room.
+    pub fn stage_from_record<T, U>(
         &mut self,
         cluster: &mut impl Cluster,
         instruction: ProofInstruction,
@@ -138,7 +165,6 @@ impl ProofAccounts {
             spl_record::instruction::write(&record.pubkey(), &payer, offset as u64, chunk)
         };
 
-        // First transaction: create + initialize + as much of the proof as fits.
         let mut offset = largest_chunk(&payer, bytes, |chunk| {
             vec![create.clone(), initialize.clone(), write(0, chunk)]
         });
@@ -151,6 +177,9 @@ impl ProofAccounts {
             &[&record],
         )?;
         self.records.push(record.pubkey());
+
+        // Write full chunks until the rest fits in a single write, and keep that one back.
+        let mut tail_write = None;
         while offset < bytes.len() {
             let rest = &bytes[offset..];
             let len = largest_chunk(&payer, rest, |chunk| vec![write(offset, chunk)]);
@@ -159,39 +188,118 @@ impl ProofAccounts {
                     "record write does not fit a transaction".into(),
                 ));
             }
+            if len == rest.len() {
+                tail_write = Some(write(offset, rest));
+                break;
+            }
             cluster.send(&[write(offset, &rest[..len])], &[])?;
             offset += len;
         }
 
         let context = Keypair::new();
-        let create_context = create_context_account::<U>(cluster, &context.pubkey());
-        let verify = instruction.encode_verify_proof_from_account(
-            Some(context_info(&context.pubkey(), &payer)),
-            &record.pubkey(),
-            RecordData::WRITABLE_START_INDEX as u32,
-        );
-        cluster.send(
-            &with_compute_unit_limit(
-                compute_units(instruction) + OVERHEAD_UNITS,
-                vec![create_context, verify],
+        let address = context.pubkey();
+        self.staged.push(Staged {
+            create: create_context_account::<U>(cluster, &address),
+            verify: instruction.encode_verify_proof_from_account(
+                Some(context_info(&address, &payer)),
+                &record.pubkey(),
+                RecordData::WRITABLE_START_INDEX as u32,
             ),
-            &[&context],
-        )?;
-        self.contexts.push(context.pubkey());
-        Ok(context.pubkey())
+            units: compute_units(instruction),
+            tail_write,
+            context,
+        });
+        Ok(address)
     }
 
-    /// Close every account, then hand back `result`. Cleanup runs whether or not the operation that
-    /// used the proofs succeeded, so a failed transfer does not strand rent in proof accounts.
-    pub fn close_after<T>(self, cluster: &mut impl Cluster, result: Result<T>) -> Result<T> {
+    /// Send `instructions` (the Token-2022 instruction that uses the proofs) in one transaction
+    /// together with the staged verifications before it and the closing of every proof account
+    /// after it. `units` is the compute budget of `instructions`.
+    ///
+    /// Staged record tails ride along if they fit and are written just before otherwise. If the
+    /// transaction fails, the proof accounts are closed in a separate transaction and the original
+    /// error is returned.
+    pub fn consume(
+        mut self,
+        cluster: &mut impl Cluster,
+        instructions: Vec<Instruction>,
+        signers: &[&Keypair],
+        units: u32,
+    ) -> Result<Receipt> {
+        let payer = cluster.payer();
+        let build = |this: &Self, with_tails: bool| {
+            let mut all = Vec::new();
+            let mut total = units + OVERHEAD_UNITS;
+            for staged in &this.staged {
+                if let (true, Some(tail)) = (with_tails, &staged.tail_write) {
+                    all.push(tail.clone());
+                    total += RECORD_WRITE_UNITS;
+                }
+                all.push(staged.create.clone());
+                all.push(staged.verify.clone());
+                total += staged.units;
+            }
+            all.extend(instructions.iter().cloned());
+            let staged_contexts: Vec<Address> = this
+                .staged
+                .iter()
+                .map(|staged| staged.context.pubkey())
+                .collect();
+            for context in this.contexts.iter().chain(&staged_contexts) {
+                all.push(close_context_state(context_info(context, &payer), &payer));
+                total += compute_units(ProofInstruction::CloseContextState);
+            }
+            for record in &this.records {
+                all.push(spl_record::instruction::close_account(
+                    record, &payer, &payer,
+                ));
+                total += RECORD_CLOSE_UNITS;
+            }
+            with_compute_unit_limit(total, all)
+        };
+
+        let mut transaction = build(&self, true);
+        if !fits_in_one_transaction(&transaction, &payer) {
+            let tails: Vec<Instruction> = self
+                .staged
+                .iter_mut()
+                .filter_map(|staged| staged.tail_write.take())
+                .collect();
+            for tail in tails {
+                if let Err(error) = cluster.send(&[tail], &[]) {
+                    return self.close_after(cluster, Err(error));
+                }
+            }
+            transaction = build(&self, false);
+        }
+        if !fits_in_one_transaction(&transaction, &payer) {
+            let error = Error::Invalid("proofs and instruction do not fit one transaction".into());
+            return self.close_after(cluster, Err(error));
+        }
+
+        let mut keypairs = signers.to_vec();
+        keypairs.extend(self.staged.iter().map(|staged| &staged.context));
+        let result = cluster.send(&transaction, &keypairs);
+        if result.is_err() {
+            // The failed transaction created none of the staged contexts; close the rest.
+            self.staged.clear();
+            return self.close_after(cluster, result);
+        }
+        result
+    }
+
+    /// Close every account created so far, then hand back `result`, so a failed operation does not
+    /// strand rent in proof accounts.
+    pub fn close_after<T>(mut self, cluster: &mut impl Cluster, result: Result<T>) -> Result<T> {
+        // Staged contexts only exist inside the consuming transaction.
+        self.staged.clear();
         let closed = self.close(cluster);
         let value = result?;
         closed?;
         Ok(value)
     }
 
-    /// Close every account and refund the rent to the cluster payer.
-    pub fn close(self, cluster: &mut impl Cluster) -> Result<()> {
+    fn close(self, cluster: &mut impl Cluster) -> Result<()> {
         let payer = cluster.payer();
         let mut pending: Vec<(Instruction, u32)> = self
             .contexts
@@ -214,7 +322,7 @@ impl ProofAccounts {
         let mut batch: Vec<(Instruction, u32)> = Vec::new();
         for item in pending {
             batch.push(item);
-            if !fits_in_one_transaction(&budgeted(&batch), &payer) {
+            if batch.len() > 1 && !fits_in_one_transaction(&budgeted(&batch), &payer) {
                 let overflow = batch.pop().expect("just pushed");
                 cluster.send(&budgeted(&batch), &[])?;
                 batch = vec![overflow];
@@ -325,6 +433,9 @@ mod tests {
         transaction_size(&with_compute_unit_limit(1, instructions), &payer)
     }
 
+    /// Why the U64 range proof goes through a record: verifying it right after its CreateAccount does
+    /// not fit, and the alternative (create, then verify in a later transaction) leaves an empty
+    /// context account that anyone can take over.
     #[test]
     fn u64_range_proof_fits_alone_but_not_next_to_create_account() {
         let alone = verify_size::<BatchedRangeProofU64Data, _>(

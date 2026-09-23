@@ -126,8 +126,8 @@ fn full_confidential_lifecycle() {
     let transactions = coin.svm.since(before);
     assert_eq!(
         transactions.len(),
-        9,
-        "4 proofs + 3 for the range proof + transfer + cleanup"
+        7,
+        "4 proof transactions, 2 record writes, then range proof + transfer + cleanup together"
     );
     assert!(transactions
         .iter()
@@ -189,7 +189,8 @@ fn full_confidential_lifecycle() {
     assert_eq!(bob_snapshot.amount, net);
     assert_eq!(available_balance(&bob_snapshot, &bob_keys).unwrap(), 0);
 
-    // Alice takes part of hers back to public.
+    // Alice takes part of hers back to public: one record write, then everything else together.
+    let before = coin.svm.receipts.len();
     withdraw(
         &mut coin.svm,
         &alice_account,
@@ -198,6 +199,7 @@ fn full_confidential_lifecycle() {
         200 * RUSD,
     )
     .unwrap();
+    assert_eq!(coin.svm.since(before).len(), 2);
     let alice_snapshot = coin.account(&alice_account);
     assert_eq!(alice_snapshot.amount, 600 * RUSD);
     assert_eq!(
@@ -248,6 +250,11 @@ fn the_chain_rejects_a_withdraw_that_spends_pending_funds() {
         .svm
         .svm
         .get_program_accounts(&solana_zk_elgamal_proof_interface::id())
+        .is_empty());
+    assert!(coin
+        .svm
+        .svm
+        .get_program_accounts(&spl_record::id())
         .is_empty());
 
     apply_pending_balance(&mut coin.svm, &bob_account, &bob, &bob_keys).unwrap();

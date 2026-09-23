@@ -19,6 +19,9 @@
 //!   is proven correct (`PercentageWithCap`) against the fee schedule of the *current epoch* and
 //!   withheld encrypted under the issuer's withdraw-withheld ElGamal key.
 //! * **Auditor.** Every transfer amount is also encrypted under the mint's auditor key.
+//! * **Transactions.** A confidential transfer takes 7 transactions and a withdraw 2 (see
+//!   [`crate::proofs`] for how the proofs are split). The range proof is verified, used and
+//!   closed inside the Token-2022 transaction itself.
 
 use {
     crate::{
@@ -54,6 +57,11 @@ use {
     },
     std::num::NonZeroI8,
 };
+
+/// Compute budget for a Token-2022 `TransferWithFee` (measured at about 45,000 CU).
+pub const TRANSFER_WITH_FEE_UNITS: u32 = 80_000;
+/// Compute budget for a Token-2022 `Withdraw` (measured at about 6,600 CU).
+pub const WITHDRAW_UNITS: u32 = 20_000;
 
 /// How many credits (deposits + incoming transfers) may pile up in `pending_balance` before the
 /// owner must apply them. Bounded so the pending ciphertexts stay decryptable.
@@ -383,7 +391,7 @@ pub fn transfer(
     let new_decryptable: DecryptableBalance = keys.ae.encrypt(available - amount).into();
 
     let mut accounts = ProofAccounts::default();
-    let result = (|| {
+    let prepared = (|| -> Result<Vec<Instruction>> {
         let equality = accounts.verify(
             cluster,
             ProofInstruction::VerifyCiphertextCommitmentEquality,
@@ -406,12 +414,12 @@ pub fn transfer(
             ProofInstruction::VerifyBatchedGroupedCiphertext2HandlesValidity,
             &proof.fee_ciphertext_validity_proof_data,
         )?;
-        let range = accounts.verify_via_record(
+        let range = accounts.stage_from_record(
             cluster,
             ProofInstruction::VerifyBatchedRangeProofU256,
             &proof.range_proof_data,
         )?;
-        let instructions = ct::transfer_with_fee(
+        Ok(ct::transfer_with_fee(
             &TOKEN_2022_PROGRAM_ID,
             source,
             &mint.address,
@@ -426,10 +434,14 @@ pub fn transfer(
             ProofLocation::ContextStateAccount(&fee_sigma),
             ProofLocation::ContextStateAccount(&fee_validity),
             ProofLocation::ContextStateAccount(&range),
-        )?;
-        cluster.send(&instructions, &[owner])
+        )?)
     })();
-    accounts.close_after(cluster, result)?;
+    let instructions = match prepared {
+        Ok(instructions) => instructions,
+        Err(error) => return accounts.close_after(cluster, Err(error)),
+    };
+    // Range proof verification, the transfer and every close, in one transaction.
+    accounts.consume(cluster, instructions, &[owner], TRANSFER_WITH_FEE_UNITS)?;
 
     Ok(ConfidentialTransfer {
         amount,
@@ -491,18 +503,14 @@ pub fn withdraw_against(
     let new_decryptable: DecryptableBalance = keys.ae.encrypt(balance - amount).into();
 
     let mut accounts = ProofAccounts::default();
-    let result = (|| {
-        let equality = accounts.verify(
-            cluster,
-            ProofInstruction::VerifyCiphertextCommitmentEquality,
-            &proof.equality_proof_data,
-        )?;
-        let range = accounts.verify(
+    let prepared = (|| -> Result<Vec<Instruction>> {
+        let range = accounts.stage_from_record(
             cluster,
             ProofInstruction::VerifyBatchedRangeProofU64,
             &proof.range_proof_data,
         )?;
-        let instructions = ct::withdraw(
+        // The equality proof is small enough to travel inline, right after the Withdraw.
+        Ok(ct::withdraw(
             &TOKEN_2022_PROGRAM_ID,
             token_account,
             &mint.address,
@@ -511,10 +519,19 @@ pub fn withdraw_against(
             &new_decryptable,
             &owner.pubkey(),
             &[],
-            ProofLocation::ContextStateAccount(&equality),
+            ProofLocation::InstructionOffset(
+                NonZeroI8::new(1).unwrap(),
+                &proof.equality_proof_data,
+            ),
             ProofLocation::ContextStateAccount(&range),
-        )?;
-        cluster.send(&instructions, &[owner])
+        )?)
     })();
-    accounts.close_after(cluster, result).map(|_| ())
+    let instructions = match prepared {
+        Ok(instructions) => instructions,
+        Err(error) => return accounts.close_after(cluster, Err(error)),
+    };
+    let units = WITHDRAW_UNITS
+        + crate::proofs::compute_units(ProofInstruction::VerifyCiphertextCommitmentEquality);
+    accounts.consume(cluster, instructions, &[owner], units)?;
+    Ok(())
 }
