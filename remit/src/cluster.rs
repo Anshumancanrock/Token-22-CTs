@@ -45,6 +45,11 @@ pub trait Cluster {
     /// `signers` are the signatures the instructions require besides the fee payer's. Flows pass
     /// exactly those; an implementation may skip a signer that equals the fee payer.
     ///
+    /// Return `Err` only when the transaction definitely did not land (for an RPC client: it
+    /// failed, or its blockhash expired unconfirmed). After an error the flows clean up the
+    /// accounts they created and may rebuild the transaction from fresh state, so an "unknown"
+    /// outcome must be resolved before returning.
+    ///
     /// Implementations must refuse transactions above [`PACKET_DATA_SIZE`], so that every flow that
     /// passes the tests also fits on a real cluster.
     fn send(&mut self, instructions: &[Instruction], signers: &[&Keypair]) -> Result<Receipt>;

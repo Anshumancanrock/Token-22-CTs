@@ -153,7 +153,8 @@ pub fn pending_balance(account: &AccountSnapshot, keys: &ConfidentialKeys) -> Re
 }
 
 /// Fees withheld (encrypted) in `account` by confidential transfers, decrypted with the issuer's
-/// withdraw-withheld ElGamal key.
+/// withdraw-withheld ElGamal key. Decryption covers totals below 2^32 base units (4,294 rUSD);
+/// fees should be collected before an account accumulates more.
 pub fn withheld_confidential_fee(
     account: &AccountSnapshot,
     withdraw_withheld_authority: &ElGamalKeypair,

@@ -3,6 +3,7 @@ name = "remit"
 description = "Client library for a Token-2022 remittance stablecoin: fees, KYC freeze/thaw, on-chain metadata, confidential transfers"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

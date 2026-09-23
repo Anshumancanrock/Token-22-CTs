@@ -3,6 +3,7 @@ name = "remit-agent"
 description = "Minimal delegate agent: moves tokens from a user's account under an Approve'd allowance (CPI Guard compatible)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

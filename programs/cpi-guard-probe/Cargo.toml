@@ -3,6 +3,7 @@ name = "cpi-guard-probe"
 description = "Test fixture: the CPI patterns CPI Guard exists to block (owner-signed transfer and approve through CPI)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
