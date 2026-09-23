@@ -45,18 +45,21 @@ pub const MANDATE_SEED: &[u8] = b"mandate";
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program_entrypoint::entrypoint!(process_instruction);
 
-/// Errors specific to the agent. Encoded as `ProgramError::Custom(code)`.
+/// Errors specific to the agent, encoded as `ProgramError::Custom(code)`.
+///
+/// The codes start at 6000 so they never collide with the Token-2022 errors that reach the caller
+/// through the CPI (`TokenError` uses 0..=64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum AgentError {
     /// The token program account is not Token-2022.
-    WrongTokenProgram = 0,
+    WrongTokenProgram = 6000,
     /// The delegate account is not the mandate PDA for `(source, destination)`.
-    MandateMismatch = 1,
+    MandateMismatch = 6001,
     /// The mint account is not owned by Token-2022.
-    MintNotOwnedByToken2022 = 2,
+    MintNotOwnedByToken2022 = 6002,
     /// Fee arithmetic overflowed.
-    FeeOverflow = 3,
+    FeeOverflow = 6003,
 }
 
 impl From<AgentError> for ProgramError {
@@ -196,6 +199,7 @@ pub fn process_instruction(
                     mint.clone(),
                     destination.clone(),
                     authority.clone(),
+                    token_program.clone(),
                 ],
                 &[&[
                     MANDATE_SEED,
@@ -226,6 +230,7 @@ pub fn process_instruction(
                     mint.clone(),
                     destination.clone(),
                     authority.clone(),
+                    token_program.clone(),
                 ],
             )
         }
@@ -248,6 +253,7 @@ pub fn process_instruction(
                     mint.clone(),
                     delegate.clone(),
                     authority.clone(),
+                    token_program.clone(),
                 ],
             )
         }
