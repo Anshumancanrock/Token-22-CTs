@@ -21,5 +21,5 @@ fixtures:
 
 # Re-render docs/tests-passing.png from a real `make test` run (Linux `script`, python3-pil).
 screenshot: build-sbf
-	TERM=xterm-256color script -qfec "make test" target/make-test.log > /dev/null
+	TERM=xterm-256color script -qfec "make --no-print-directory test" target/make-test.log > /dev/null
 	python3 scripts/screenshot.py target/make-test.log docs/tests-passing.png

@@ -9,6 +9,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 src, out = sys.argv[1], sys.argv[2]
 raw = open(src, "rb").read().decode("utf-8", "replace")
+# `script` records the command it ran in its header: [COMMAND="..."]
+header = re.search(r'COMMAND="([^"]*)"', raw)
+command = header.group(1) if header else "make test"
 lines = raw.replace("\r\n", "\n").split("\n")
 lines = [l for l in lines if not l.startswith("Script started") and not l.startswith("Script done")]
 while lines and not lines[-1].strip():
@@ -16,7 +19,7 @@ while lines and not lines[-1].strip():
 # carriage returns inside a line overwrite what came before
 lines = [re.sub(r"\x1b[()][0-9A-Za-z]", "", l.split("\r")[-1]) for l in lines]
 
-PROMPT = [("\x1b[1;92m", "~/Turnine-week-4"), ("\x1b[0m", " $ make test")]
+PROMPT = [("\x1b[1;92m", "~/Turnine-week-4"), ("\x1b[0m", f" $ {command}")]
 
 SCALE = 2
 FONT_SIZE = 14 * SCALE
@@ -69,7 +72,7 @@ d.rectangle([0, TITLE_H, width - 1, TITLE_H + 10 * SCALE], fill=BG)
 for i, c in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
     cx, cy, r = 16 * SCALE + i * 20 * SCALE, TITLE_H // 2, 6 * SCALE
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=c)
-title = "Token-22-CTs: make test"
+title = f"Token-22-CTs: {command}"
 d.text(((width - regular.getlength(title)) / 2, (TITLE_H - FONT_SIZE) / 2 - SCALE), title, font=regular, fill=(170, 170, 170))
 
 y = TITLE_H + PAD_Y
