@@ -11,8 +11,8 @@
 //! | 5. Re-issue with `PermanentDelegate` + confidential transfers (manual approval) | [`mint`] |
 //! | 6. Confidential lifecycle: configure, approve, deposit, apply, transfer, withdraw | [`confidential`], [`proofs`] |
 //!
-//! Every flow talks to the chain through the [`Cluster`] trait, so the same code runs against
-//! LiteSVM (the test-suite) or an RPC node.
+//! Every flow talks to the chain through the [`Cluster`] trait. The test suite implements it for
+//! LiteSVM; an RPC client needs the same five methods.
 
 pub mod cluster;
 pub mod compliance;

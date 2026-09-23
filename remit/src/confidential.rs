@@ -310,7 +310,8 @@ pub fn apply_pending_balance(
 pub struct ConfidentialTransfer {
     /// Gross amount (known to sender, recipient and auditor only).
     pub amount: u64,
-    /// Fee withheld, computed with `calculate_epoch_fee(current_epoch, amount)`.
+    /// Fee proven for the transfer, computed with `calculate_epoch_fee(current_epoch, amount)`,
+    /// and withheld (encrypted) in the destination. A self-transfer withholds nothing.
     pub fee: u64,
     /// Epoch the fee schedule was taken from.
     pub epoch: u64,

@@ -32,7 +32,8 @@ use {
 pub struct FeeTransfer {
     /// Gross amount debited from the source.
     pub amount: u64,
-    /// Fee withheld in the destination account (issuer revenue).
+    /// Fee stated in the instruction and withheld in the destination account (issuer revenue).
+    /// Token-2022 still checks it on a self-transfer, but withholds nothing there.
     pub fee: u64,
     /// Epoch the fee was computed for.
     pub epoch: u64,
