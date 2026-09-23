@@ -8,10 +8,17 @@ use {
         kyc::{approve_kyc, revoke_kyc, set_default_account_state},
         token::{create_token_account, mint_to},
         transfer::transfer_with_fee,
+        Cluster, TOKEN_2022_PROGRAM_ID,
     },
     solana_keypair::Keypair,
     solana_signer::Signer,
-    spl_token_2022_interface::{error::TokenError, state::AccountState},
+    solana_system_interface::instruction::create_account,
+    spl_token_2022_interface::{
+        error::TokenError,
+        extension::ExtensionType,
+        instruction::{initialize_account3, set_authority, thaw_account, AuthorityType},
+        state::{Account, AccountState},
+    },
 };
 
 #[test]
@@ -114,4 +121,79 @@ fn kyc_can_be_revoked() {
         TokenError::AccountFrozen,
     );
     assert_eq!(coin.account(&alice_account).amount, 10 * RUSD);
+}
+
+#[test]
+fn kyc_is_only_granted_to_accounts_whose_owner_cannot_change() {
+    let mut coin = Stablecoin::v1();
+    let alice = Keypair::new();
+
+    // A token account at its own address, created without ImmutableOwner.
+    let loose = Keypair::new();
+    let space =
+        ExtensionType::try_calculate_account_len::<Account>(&[ExtensionType::TransferFeeAmount])
+            .unwrap();
+    let rent = coin.svm.minimum_balance_for_rent_exemption(space);
+    let payer = coin.svm.payer();
+    coin.svm
+        .send(
+            &[
+                create_account(
+                    &payer,
+                    &loose.pubkey(),
+                    rent,
+                    space as u64,
+                    &TOKEN_2022_PROGRAM_ID,
+                ),
+                initialize_account3(
+                    &TOKEN_2022_PROGRAM_ID,
+                    &loose.pubkey(),
+                    &coin.mint,
+                    &alice.pubkey(),
+                )
+                .unwrap(),
+            ],
+            &[&loose],
+        )
+        .unwrap();
+    assert!(coin.account(&loose.pubkey()).is_frozen());
+
+    // The library will not clear KYC for it.
+    let error = approve_kyc(&mut coin.svm, &loose.pubkey(), &coin.authorities.freeze).unwrap_err();
+    assert!(error.to_string().contains("ImmutableOwner"), "{error}");
+
+    // Why: once thawed, Alice can hand the verified account to someone who never did KYC.
+    let thaw = thaw_account(
+        &TOKEN_2022_PROGRAM_ID,
+        &loose.pubkey(),
+        &coin.mint,
+        &coin.authorities.freeze.pubkey(),
+        &[],
+    )
+    .unwrap();
+    coin.svm.send(&[thaw], &[&coin.authorities.freeze]).unwrap();
+    let stranger = Keypair::new().pubkey();
+    let hand_over = |account: &solana_address::Address| {
+        set_authority(
+            &TOKEN_2022_PROGRAM_ID,
+            account,
+            Some(&stranger),
+            AuthorityType::AccountOwner,
+            &alice.pubkey(),
+            &[],
+        )
+        .unwrap()
+    };
+    coin.svm
+        .send(&[hand_over(&loose.pubkey())], &[&alice])
+        .unwrap();
+    let sold = coin.account(&loose.pubkey());
+    assert_eq!((sold.owner, sold.is_frozen()), (stranger, false));
+
+    // An ATA carries ImmutableOwner, so the same hand-over fails there.
+    let ata = coin.onboard(&alice);
+    assert_token_error(
+        coin.svm.send(&[hand_over(&ata)], &[&alice]),
+        TokenError::ImmutableOwner,
+    );
 }

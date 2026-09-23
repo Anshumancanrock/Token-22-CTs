@@ -15,19 +15,31 @@ use {
     solana_keypair::Keypair,
     solana_signer::Signer,
     spl_token_2022_interface::{
-        extension::default_account_state::instruction::update_default_account_state,
+        extension::{
+            default_account_state::instruction::update_default_account_state, ExtensionType,
+        },
         instruction::{freeze_account, thaw_account},
         state::AccountState,
     },
 };
 
 /// KYC cleared: thaw `token_account` so it can receive and send.
+///
+/// Only accounts with the `ImmutableOwner` extension qualify (every ATA has it). KYC vouches for a
+/// person, but the thaw sticks to the account; without `ImmutableOwner` the verified owner could
+/// hand the thawed account to anyone with `SetAuthority(AccountOwner)`.
 pub fn approve_kyc(
     cluster: &mut impl Cluster,
     token_account: &Address,
     freeze_authority: &Keypair,
 ) -> Result<()> {
     let account = load_account(cluster, token_account)?;
+    if !account.extensions.contains(&ExtensionType::ImmutableOwner) {
+        return Err(Error::Invalid(format!(
+            "{token_account} lacks ImmutableOwner: its owner could hand the account to someone \
+             else after KYC, so only accounts with a fixed owner (such as ATAs) are thawed"
+        )));
+    }
     if !account.is_frozen() {
         return Err(Error::Invalid(format!(
             "{token_account} is not frozen; KYC was already approved"
